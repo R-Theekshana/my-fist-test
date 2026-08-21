@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="si">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Video Compressor</title>
+<!-- Enables SharedArrayBuffer client-side (no server config needed) so ffmpeg.wasm can run -->
+<script src="coi-serviceworker.js"></script>
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<style>
+  :root{
+    --bg:#0A0D10;
+    --bg-panel:#12161B;
+    --bg-elevated:#1A2028;
+    --border:#232B34;
+    --border-bright:#2F3A45;
+    --text:#E7ECEF;
+    --text-dim:#8A94A0;
+    --accent:#39D98A;
+    --accent-dim:#1F7A50;
+    --warm:#FF7A45;
+    --danger:#FF5C5C;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", Inter, ui-sans-serif, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(circle at 15% 0%, rgba(57,217,138,0.06), transparent 40%),
+      var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    min-height:100vh;
+    padding:32px 16px 80px;
+  }
+  .app{max-width:760px;margin:0 auto;}
+
+  /* ---------- header ---------- */
+  header{margin-bottom:28px;}
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:0.16em;
+    color:var(--accent);
+    text-transform:uppercase;
+    display:flex;align-items:center;gap:8px;
+    margin-bottom:10px;
+  }
+  .eyebrow::before{
+    content:"";width:6px;height:6px;border-radius:50%;
+    background:var(--accent);
+    box-shadow:0 0 8px var(--accent);
+  }
+  h1{
+    font-size:32px;
+    font-weight:800;
+    letter-spacing:-0.02em;
+    margin:0 0 8px;
+  }
+  .subtitle{
+    color:var(--text-dim);
+    font-size:14.5px;
+    line-height:1.6;
+    max-width:560px;
+  }
+
+  /* ---------- panel ---------- */
+  .panel{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:22px;
+    margin-bottom:18px;
+    position:relative;
+  }
+  .panel-corner{
+    position:absolute; width:10px; height:10px;
+    border-color:var(--border-bright); opacity:0.7;
+  }
+  .panel-corner.tl{top:-1px;left:-1px;border-top:2px solid;border-left:2px solid;border-top-left-radius:14px;}
+  .panel-corner.br{bottom:-1px;right:-1px;border-bottom:2px solid;border-right:2px solid;border-bottom-right-radius:14px;}
+
+  /* ---------- dropzone ---------- */
+  .dropzone{
+    border:1.5px dashed var(--border-bright);
+    border-radius:12px;
+    padding:36px 20px;
+    text-align:center;
+    cursor:pointer;
+    transition:border-color .15s, background .15s;
+  }
+  .dropzone:hover, .dropzone.drag{
+    border-color:var(--accent);
+    background:rgba(57,217,138,0.04);
+  }
+  .dropzone .icon{font-size:28px;margin-bottom:10px;opacity:0.9;}
+  .dropzone .primary{font-weight:600;font-size:15px;margin-bottom:4px;}
+  .dropzone .secondary{color:var(--text-dim);font-size:13px;}
+  .dropzone .si{color:var(--text-dim);font-size:12.5px;margin-top:6px;}
+  input[type=file]{display:none;}
+
+  .file-chip{
+    display:flex;align-items:center;justify-content:space-between;
+    background:var(--bg-elevated);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:12px 14px;
+    margin-top:14px;
+    font-size:13.5px;
+  }
+  .file-chip .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px;}
+  .file-chip .size{font-family:var(--mono);color:var(--accent);font-size:12.5px;}
+  .file-chip button{
+    background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;
+    padding:4px 8px;
+  }
+  .file-chip button:hover{color:var(--danger);}
+
+  /* ---------- settings ---------- */
+  .settings-title{
+    font-family:var(--mono);
+    font-size:11px;letter-spacing:0.1em;text-transform:uppercase;
+    color:var(--text-dim);margin-bottom:16px;
+  }
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:560px){.grid{grid-template-columns:1fr;}}
+  .field label{
+    display:block;font-size:12.5px;color:var(--text-dim);margin-bottom:8px;font-weight:600;
+  }
+  .field .hint{font-size:11.5px;color:var(--text-dim);opacity:0.75;margin-top:6px;line-height:1.5;}
+
+  .seg{
+    display:flex;background:var(--bg-elevated);border:1px solid var(--border);border-radius:9px;padding:3px;gap:2px;flex-wrap:wrap;
+  }
+  .seg button{
+    flex:1;min-width:56px;
+    background:transparent;border:none;color:var(--text-dim);
+    padding:8px 6px;border-radius:6px;font-size:12.5px;font-weight:600;cursor:pointer;
+    font-family:var(--mono);
+    transition:all .12s;
+  }
+  .seg button.active{background:var(--accent);color:#062418;}
+  .seg button:hover:not(.active){color:var(--text);}
+
+  select{
+    width:100%;background:var(--bg-elevated);color:var(--text);
+    border:1px solid var(--border);border-radius:9px;padding:10px 12px;
+    font-size:13px;font-family:var(--sans);cursor:pointer;
+  }
+  select:focus, .seg button:focus-visible, .cta:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
+  input[type=range]{
+    width:100%;accent-color:var(--accent);
+    height:4px;
+  }
+  .range-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+  .range-value{font-family:var(--mono);color:var(--accent);font-size:12.5px;font-weight:700;}
+
+  /* ---------- cta ---------- */
+  .cta{
+    width:100%;
+    background:var(--accent);
+    color:#062418;
+    border:none;border-radius:12px;
+    padding:16px;
+    font-size:15px;font-weight:700;
+    cursor:pointer;
+    letter-spacing:-0.01em;
+    transition:transform .1s, background .15s;
+  }
+  .cta:hover:not(:disabled){transform:translateY(-1px);background:#4EF0A0;}
+  .cta:disabled{background:var(--bg-elevated);color:var(--text-dim);cursor:not-allowed;}
+
+  /* ---------- progress ---------- */
+  .progress-status{
+    display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--text-dim);margin-bottom:10px;
+  }
+  .progress-status .pct{color:var(--accent);font-weight:700;}
+  .progress-track{
+    height:8px;background:var(--bg-elevated);border-radius:6px;overflow:hidden;border:1px solid var(--border);
+  }
+  .progress-fill{
+    height:100%;background:linear-gradient(90deg, var(--accent-dim), var(--accent));
+    width:0%;transition:width .25s ease;
+    border-radius:6px;
+  }
+  .progress-note{font-size:12px;color:var(--text-dim);margin-top:10px;line-height:1.6;}
+
+  /* ---------- result ---------- */
+  .meter{margin:6px 0 20px;}
+  .meter-row{margin-bottom:12px;}
+  .meter-label{
+    display:flex;justify-content:space-between;font-size:12px;font-family:var(--mono);margin-bottom:6px;
+  }
+  .meter-label .tag{color:var(--text-dim);}
+  .meter-bar-bg{height:22px;background:var(--bg-elevated);border-radius:6px;overflow:hidden;border:1px solid var(--border);}
+  .meter-bar{height:100%;border-radius:6px;transition:width .8s cubic-bezier(.2,.8,.3,1);}
+  .meter-bar.original{background:var(--warm);width:100%;}
+  .meter-bar.compressed{background:var(--accent);width:0%;}
+
+  .stats-grid{
+    display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;
+  }
+  @media(max-width:560px){.stats-grid{grid-template-columns:repeat(2,1fr);}}
+  .stat{
+    background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:12px;
+  }
+  .stat .k{font-size:10.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;}
+  .stat .v{font-family:var(--mono);font-size:16px;font-weight:700;}
+  .stat .v.accent{color:var(--accent);}
+
+  .download-btn{
+    display:block;width:100%;text-align:center;text-decoration:none;
+    background:var(--accent);color:#062418;font-weight:700;padding:15px;border-radius:12px;
+    font-size:15px;
+  }
+  .reset-link{
+    display:block;text-align:center;color:var(--text-dim);font-size:12.5px;margin-top:12px;cursor:pointer;
+    background:none;border:none;width:100%;font-family:var(--sans);
+  }
+  .reset-link:hover{color:var(--text);}
+
+  .banner{
+    border-radius:10px;padding:12px 14px;font-size:12.5px;line-height:1.6;margin-bottom:16px;
+    border:1px solid var(--border);
+  }
+  .banner.warn{background:rgba(255,122,69,0.08);border-color:rgba(255,122,69,0.3);color:#FFB08C;}
+  .banner.err{background:rgba(255,92,92,0.08);border-color:rgba(255,92,92,0.3);color:#FF9B9B;}
+
+  footer{
+    text-align:center;color:var(--text-dim);font-size:12px;margin-top:28px;line-height:1.7;
+  }
+  footer b{color:var(--text);}
+
+  .hidden{display:none !important;}
+
+  @media (prefers-reduced-motion: reduce){
+    *{transition:none !important;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="eyebrow">Local · Runs In Your Browser</div>
+    <h1>Video Compressor</h1>
+    <div class="subtitle">
+      Video file size එක අඩු කරගන්න — quality එක possible තරම් රැකගෙන. සියල්ල browser එක ඇතුලේම process වෙන්නේ, video file එකක් කොහෙවත් upload වෙන්නේ නෑ.
+    </div>
+  </header>
+
+  <!-- UPLOAD -->
+  <div class="panel" id="uploadPanel">
+    <div class="dropzone" id="dropzone">
+      <div class="icon">⬇</div>
+      <div class="primary">Video එකක් තෝරන්න හෝ මෙතනට drag කරන්න</div>
+      <div class="secondary">MP4, MOV, MKV, WebM, AVI — ඕනෑම format එකක්</div>
+      <div class="si">Recommend: 300MB ට අඩු files, browser memory limit නිසා</div>
+    </div>
+    <input type="file" id="fileInput" accept="video/*">
+    <div class="file-chip hidden" id="fileChip">
+      <span class="name" id="fileName"></span>
+      <span class="size" id="fileSize"></span>
+      <button id="clearFile">✕ Remove</button>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="panel hidden" id="settingsPanel">
+    <div class="settings-title">Compression Settings — hama setting ekakma</div>
+    <div class="grid">
+
+      <div class="field">
+        <label>Resolution</label>
+        <div class="seg" data-group="resolution">
+          <button data-val="original" class="active">Original</button>
+          <button data-val="1080">1080p</button>
+          <button data-val="720">720p</button>
+          <button data-val="480">480p</button>
+          <button data-val="360">360p</button>
+        </div>
+        <div class="hint">Download කරන resolution එක — 720p/1080p ඕනම එකක් තෝරාගන්න පුළුවන්.</div>
+      </div>
+
+      <div class="field">
+        <label>Output Format</label>
+        <div class="seg" data-group="format">
+          <button data-val="mp4" class="active">MP4 (H.264)</button>
+          <button data-val="webm">WebM (VP9)</button>
+        </div>
+        <div class="hint">MP4 — universal compatibility. WebM — smaller size, slower to encode.</div>
+      </div>
+
+      <div class="field">
+        <label>Quality / Compression level</label>
+        <div class="range-row">
+          <span class="hint" style="margin:0" id="crfLabel">Balanced</span>
+          <span class="range-value" id="crfValue">CRF 26</span>
+        </div>
+        <input type="range" id="crfSlider" min="18" max="32" value="26" step="1">
+        <div class="hint">වම — quality වැඩි, size වැඩි. දකුණ — quality අඩු, size අඩු. Quality drop නොවී තියෙන්න ඕන නම් 18–23 ‍හොඳම range එක.</div>
+      </div>
+
+      <div class="field">
+        <label>Encoding Speed</label>
+        <div class="seg" data-group="preset">
+          <button data-val="ultrafast">Fastest</button>
+          <button data-val="fast" class="active">Fast</button>
+          <button data-val="medium">Balanced</button>
+          <button data-val="slow">Slow</button>
+          <button data-val="veryslow">Best</button>
+        </div>
+        <div class="hint">Slow speed = කුඩාම file size එකම quality එකේදී, ඒත් process වෙන්න වැඩි වෙලාව යනවා.</div>
+      </div>
+
+      <div class="field">
+        <label>Frame Rate</label>
+        <div class="seg" data-group="fps">
+          <button data-val="original" class="active">Original</button>
+          <button data-val="30">30 fps</button>
+          <button data-val="24">24 fps</button>
+          <button data-val="15">15 fps</button>
+        </div>
+        <div class="hint">Fps අඩු කිරීමෙන් file size තව අඩු කරගන්න පුළුවන් (motion smooth අඩු වෙයි).</div>
+      </div>
+
+      <div class="field">
+        <label>Audio</label>
+        <div class="seg" data-group="audio">
+          <button data-val="160" class="active">Keep (160k)</button>
+          <button data-val="96">Compress (96k)</button>
+          <button data-val="48">Low (48k)</button>
+          <button data-val="none">Remove</button>
+        </div>
+        <div class="hint">Audio bitrate අඩු කිරීමෙන් හෝ අයින් කිරීමෙන් size තව අඩු කරගන්න පුළුවන්.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <button class="cta hidden" id="compressBtn">Compress Video</button>
+
+  <!-- PROGRESS -->
+  <div class="panel hidden" id="progressPanel">
+    <div class="progress-status">
+      <span id="progressStage">Loading engine…</span>
+      <span class="pct" id="progressPct">0%</span>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-note" id="progressNote">
+      මුල් වතාවට compression engine එක (~25MB) download වෙනවා — ඊට පස්සේ ඉක්මන්.
+    </div>
+  </div>
+
+  <!-- ERROR -->
+  <div class="banner err hidden" id="errorBanner"></div>
+
+  <!-- RESULT -->
+  <div class="panel hidden" id="resultPanel">
+    <div class="settings-title">Done</div>
+    <div class="meter">
+      <div class="meter-row">
+        <div class="meter-label"><span>Original</span><span class="tag" id="origSizeLabel">—</span></div>
+        <div class="meter-bar-bg"><div class="meter-bar original"></div></div>
+      </div>
+      <div class="meter-row">
+        <div class="meter-label"><span>Compressed</span><span class="tag" id="compSizeLabel">—</span></div>
+        <div class="meter-bar-bg"><div class="meter-bar compressed" id="compBar"></div></div>
+      </div>
+    </div>
+    <div class="stats-grid">
+      <div class="stat"><div class="k">Reduction</div><div class="v accent" id="statReduction">—</div></div>
+      <div class="stat"><div class="k">Resolution</div><div class="v" id="statRes">—</div></div>
+      <div class="stat"><div class="k">Format</div><div class="v" id="statFormat">—</div></div>
+    </div>
+    <a class="download-btn" id="downloadBtn" download>⬇ Download Compressed Video</a>
+    <button class="reset-link" id="resetBtn">↺ Video එකක් compress කරන්න</button>
+  </div>
+
+  <footer>
+    <b>100% local</b> — ffmpeg.wasm use කරලා browser එක ඇතුලේම video එක process වෙන්නේ. Files කිසිම server එකකට upload වෙන්නේ නෑ.<br>
+    Large files (500MB+) tab crash වෙන්න පුළුවන් — browser memory limit එක නිසා.
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const fileChip = document.getElementById('fileChip');
+  const fileName = document.getElementById('fileName');
+  const fileSize = document.getElementById('fileSize');
+  const clearFile = document.getElementById('clearFile');
+  const settingsPanel = document.getElementById('settingsPanel');
+  const compressBtn = document.getElementById('compressBtn');
+  const progressPanel = document.getElementById('progressPanel');
+  const progressStage = document.getElementById('progressStage');
+  const progressPct = document.getElementById('progressPct');
+  const progressFill = document.getElementById('progressFill');
+  const progressNote = document.getElementById('progressNote');
+  const errorBanner = document.getElementById('errorBanner');
+  const resultPanel = document.getElementById('resultPanel');
+  const uploadPanel = document.getElementById('uploadPanel');
+  const resetBtn = document.getElementById('resetBtn');
+  const crfSlider = document.getElementById('crfSlider');
+  const crfValue = document.getElementById('crfValue');
+  const crfLabel = document.getElementById('crfLabel');
+
+  let currentFile = null;
+  let ffmpeg = null;
+  let ffmpegLoaded = false;
+
+  const state = { resolution:'original', format:'mp4', preset:'fast', fps:'original', audio:'160' };
+
+  // segmented controls
+  document.querySelectorAll('.seg').forEach(seg=>{
+    const group = seg.dataset.group;
+    seg.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        seg.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        state[group] = btn.dataset.val;
+      });
+    });
+  });
+
+  function crfLabelFor(v){
+    if(v<=21) return 'Highest quality (larger file)';
+    if(v<=25) return 'High quality';
+    if(v<=28) return 'Balanced';
+    return 'Smaller file (lower quality)';
+  }
+  crfSlider.addEventListener('input', ()=>{
+    crfValue.textContent = 'CRF ' + crfSlider.value;
+    crfLabel.textContent = crfLabelFor(parseInt(crfSlider.value));
+  });
+
+  function fmtBytes(bytes){
+    if(bytes < 1024) return bytes + ' B';
+    const kb = bytes/1024;
+    if(kb < 1024) return kb.toFixed(1) + ' KB';
+    const mb = kb/1024;
+    if(mb < 1024) return mb.toFixed(1) + ' MB';
+    return (mb/1024).toFixed(2) + ' GB';
+  }
+
+  // dropzone interactions
+  dropzone.addEventListener('click', ()=> fileInput.click());
+  dropzone.addEventListener('dragover', e=>{ e.preventDefault(); dropzone.classList.add('drag'); });
+  dropzone.addEventListener('dragleave', ()=> dropzone.classList.remove('drag'));
+  dropzone.addEventListener('drop', e=>{
+    e.preventDefault(); dropzone.classList.remove('drag');
+    if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', e=>{
+    if(e.target.files.length) handleFile(e.target.files[0]);
+  });
+
+  function handleFile(file){
+    if(!file.type.startsWith('video/')){
+      showError('Video file එකක් තෝරන්න (mp4, mov, mkv, webm...)');
+      return;
+    }
+    currentFile = file;
+    fileName.textContent = file.name;
+    fileSize.textContent = fmtBytes(file.size);
+    fileChip.classList.remove('hidden');
+    settingsPanel.classList.remove('hidden');
+    compressBtn.classList.remove('hidden');
+    hideError();
+  }
+
+  clearFile.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    currentFile = null;
+    fileInput.value = '';
+    fileChip.classList.add('hidden');
+    settingsPanel.classList.add('hidden');
+    compressBtn.classList.add('hidden');
+  });
+
+  function showError(msg){
+    errorBanner.textContent = msg;
+    errorBanner.classList.remove('hidden');
+  }
+  function hideError(){ errorBanner.classList.add('hidden'); }
+
+  function setProgress(pct, stage){
+    progressPct.textContent = Math.round(pct) + '%';
+    progressFill.style.width = pct + '%';
+    if(stage) progressStage.textContent = stage;
+  }
+
+  function buildArgs(inName, outName){
+    const args = ['-i', inName];
+    const vf = [];
+    if(state.resolution !== 'original'){
+      vf.push('scale=-2:' + state.resolution);
+    }
+    if(vf.length) args.push('-vf', vf.join(','));
+    if(state.fps !== 'original'){
+      args.push('-r', state.fps);
+    }
+    if(state.format === 'webm'){
+      args.push('-c:v','libvpx-vp9','-crf', crfSlider.value, '-b:v','0','-deadline', state.preset==='veryslow'?'best':(state.preset==='ultrafast'?'realtime':'good'));
+    } else {
+      args.push('-c:v','libx264','-crf', crfSlider.value, '-preset', state.preset, '-pix_fmt','yuv420p');
+    }
+    if(state.audio === 'none'){
+      args.push('-an');
+    } else {
+      args.push('-c:a', state.format==='webm' ? 'libopus':'aac', '-b:a', state.audio+'k');
+    }
+    if(state.format !== 'webm'){
+      args.push('-movflags','+faststart');
+    }
+    args.push(outName);
+    return args;
+  }
+
+  compressBtn.addEventListener('click', async ()=>{
+    if(!currentFile) return;
+    hideError();
+    compressBtn.disabled = true;
+    uploadPanel.classList.add('hidden');
+    settingsPanel.classList.add('hidden');
+    compressBtn.classList.add('hidden');
+    progressPanel.classList.remove('hidden');
+    setProgress(0, 'Loading engine…');
+
+    try{
+      if(!window.FFmpeg){
+        throw new Error('Compression engine එක load වුනේ නෑ — internet connection එක check කරලා reload කරන්න.');
+      }
+      if(typeof SharedArrayBuffer === 'undefined'){
+        if(location.protocol === 'file:'){
+          throw new Error('SharedArrayBuffer meka file එක කෙලින්ම double-click කරලා open කළාම වැඩ කරන්නේ නෑ. මේ folder එකේම "python -m http.server" වගේ local server එකකින් හෝ Netlify/GitHub Pages වගේ තැනකින් host කරලා browser එකෙන් http/https address එකෙන් open කරන්න.');
+        }
+        throw new Error('SharedArrayBuffer is not defined — page එක reload කරලා try කරන්න (COOP/COEP service worker එක register වෙන්න තත්පරයක් ගතවෙනවා).');
+      }
+      const { createFFmpeg, fetchFile } = FFmpeg;
+      if(!ffmpeg){
+        ffmpeg = createFFmpeg({
+          log:false,
+          corePath:'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+        });
+      }
+      if(!ffmpegLoaded){
+        await ffmpeg.load();
+        ffmpegLoaded = true;
+      }
+      progressNote.textContent = 'Video එක process කරමින්… file එක ලොකු නම් වෙලාව ගතවෙයි.';
+      setProgress(5, 'Compressing…');
+
+      ffmpeg.setProgress(({ratio})=>{
+        let pct = ratio && isFinite(ratio) ? Math.min(99, Math.max(5, ratio*100)) : null;
+        if(pct !== null) setProgress(pct, 'Compressing…');
+      });
+
+      const inExt = (currentFile.name.split('.').pop() || 'mp4');
+      const inName = 'input.' + inExt;
+      const outExt = state.format === 'webm' ? 'webm' : 'mp4';
+      const outName = 'output.' + outExt;
+
+      ffmpeg.FS('writeFile', inName, await fetchFile(currentFile));
+      const args = buildArgs(inName, outName);
+      await ffmpeg.run(...args);
+
+      const data = ffmpeg.FS('readFile', outName);
+      const mime = outExt === 'webm' ? 'video/webm' : 'video/mp4';
+      const blob = new Blob([data.buffer], {type: mime});
+      const url = URL.createObjectURL(blob);
+
+      // cleanup FS to free memory
+      try{ ffmpeg.FS('unlink', inName); ffmpeg.FS('unlink', outName); }catch(e){}
+
+      showResult(currentFile.size, blob.size, url, outExt);
+    } catch(err){
+      console.error(err);
+      progressPanel.classList.add('hidden');
+      uploadPanel.classList.remove('hidden');
+      settingsPanel.classList.remove('hidden');
+      compressBtn.classList.remove('hidden');
+      compressBtn.disabled = false;
+      showError('Compression fail වුනා: ' + (err && err.message ? err.message : 'Unknown error') + '. File size එක අඩු කරලා හෝ setting වෙනස් කරලා try කරන්න.');
+    }
+  });
+
+  function showResult(origSize, compSize, url, ext){
+    progressPanel.classList.add('hidden');
+    resultPanel.classList.remove('hidden');
+
+    document.getElementById('origSizeLabel').textContent = fmtBytes(origSize);
+    document.getElementById('compSizeLabel').textContent = fmtBytes(compSize);
+    const reduction = Math.max(0, (1 - (compSize/origSize)) * 100);
+    document.getElementById('statReduction').textContent = reduction.toFixed(1) + '%';
+    document.getElementById('statRes').textContent = state.resolution === 'original' ? 'Original' : state.resolution + 'p';
+    document.getElementById('statFormat').textContent = ext.toUpperCase();
+
+    const compBar = document.getElementById('compBar');
+    const ratio = Math.max(2, (compSize/origSize)*100);
+    requestAnimationFrame(()=>{ compBar.style.width = ratio + '%'; });
+
+    const dlBtn = document.getElementById('downloadBtn');
+    dlBtn.href = url;
+    dlBtn.download = 'compressed_' + (state.resolution==='original'?'original':state.resolution+'p') + '.' + ext;
+  }
+
+  resetBtn.addEventListener('click', ()=>{
+    resultPanel.classList.add('hidden');
+    uploadPanel.classList.remove('hidden');
+    settingsPanel.classList.add('hidden');
+    compressBtn.classList.add('hidden');
+    compressBtn.disabled = false;
+    currentFile = null;
+    fileInput.value = '';
+    fileChip.classList.add('hidden');
+  });
+
+})();
+</script>
+</body>
+</html>
